@@ -38,9 +38,15 @@ int main(int argc, char** argv)
 	struct write_buf wb;
 	write_buf_init(&wb);
 	CURLcode success = query(req, (void*) &wb);
-	printf("%s\n", wb.buf);
+	if(success != 0){
+		return -1;
+	}
+	json_object *resp;
+	resp = json_tokener_parse(wb.buf);
+	printf("resp json string=%s\n", json_object_to_json_string(resp));
+	json_object_put(resp);
 	write_buf_cleanup(&wb);
-	return success;
+	return 0;
 }
 
 void write_buf_init(struct write_buf* wb)
