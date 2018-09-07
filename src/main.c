@@ -20,26 +20,25 @@ void write_buf_cleanup(struct write_buf*);
 static size_t write_callback(void* buf, size_t sz, size_t nmemb, void* userp);
 
 struct ll_coord {
-	float lat;
-	float lng;
+	double lat;
+	double lng;
 	struct ll_coord* next;
 };
 
-struct ll_coord* ll_coord_create()
+struct ll_coord* ll_coord_create(struct ll_coord *tail)
 {
 	struct ll_coord* p = malloc(sizeof(struct ll_coord));
-	p->next = NULL;
+	p->next = tail;
 	return p;
 }
 
 void ll_coord_cleanup(struct ll_coord* first)
 {
 	struct ll_coord* p = first;
-	struct ll_coord* q = first->next;
 	while(p != NULL){
+		struct ll_coord* q = p->next;
 		free(p);
 		p = q;
-		q = p->next;
 	}
 }
 
@@ -63,49 +62,61 @@ struct ll_coord* get_coords_from_grid_resp_str(char* str)
 	json_object *lines;
 	int rc = json_object_object_get_ex(resp, "lines", &lines);
 	if(rc == 0){
-		sprintf(stderr, "Error: invalid grid response received");
+		printf("Error: invalid grid response received");
 		json_object_put(resp);
 		return NULL;
 	}
 	size_t ngrids = json_object_array_length(lines);
 	printf("%zu results returned\n", ngrids);
+	struct ll_coord *head = NULL;
 	for(int i=0; i<ngrids; ++i){
+		head = ll_coord_create(head);
 		json_object *it = json_object_array_get_idx(lines, i);
 		enum json_type type;
 		type = json_object_get_type(it);
 		if(type != json_type_object){
-			sprintf(stderr, "Error: unexpected non-object in list");
+			printf("Error: unexpected non-object in list");
+			json_object_put(resp);
+			return NULL;
 		}
 		json_object *p, *q;
 		rc = json_object_object_get_ex(it, "start", &p);
-		double lat,lng;
 		if(rc){
 			rc = json_object_object_get_ex(p, "lat", &q);
 			if(rc){
-				lat = json_object_get_double(q);
+				head->lat = json_object_get_double(q);
 			}
 			rc = json_object_object_get_ex(p, "lng", &q);
 			if(rc){
-				lng = json_object_get_double(q);
+				head->lng = json_object_get_double(q);
 			}
 		}
-		printf("coords=%f,%f\n", lat, lng);
+		printf("%f\n", head->lat);
 	}
 	json_object_put(resp);
-	return NULL;
+	return head;
 }
 
 int main(int argc, char** argv)
 {
-	char* req = "https://api.what3words.com/v2/grid?bbox=52.208867,0.117540,52.207988,0.116126&format=json&key=7JHOQ1KX";
+	char* req = "https://api.what3words.com/v2/grid?"
+		"bbox=52.208867,0.117540,52.207988,0.116126"
+		"&format=json&key=7JHOQ1KX";
 	struct write_buf wb;
 	write_buf_init(&wb);
 	CURLcode success = query(req, (void*) &wb);
 	if(success != 0){
-		sprintf(stderr, "Error: CURL query failed\n");
+		printf("Error: CURL query failed\n");
 		return -1;
 	}
 	struct ll_coord* head = get_coords_from_grid_resp_str(wb.buf);
+	write_buf_cleanup(&wb);
+	write_buf_init(&wb);
+	struct ll_coord* p = head;
+	while(p != NULL){
+		p = p->next;
+	}
+	ll_coord_cleanup(head);
 	write_buf_cleanup(&wb);
 	return 0;
 }
@@ -122,12 +133,10 @@ void write_buf_cleanup(struct write_buf* wb)
 	wb->buf = NULL;
 }
 
-static size_t write_callback(
-		void* buf,  size_t sz,
-		size_t nmemb, void* userp)
+static size_t write_callback(void* buf,  size_t sz, size_t n, void* p)
 {
-	struct write_buf* wb = (struct write_buf*) userp;
-	size_t len = sz * nmemb;
+	struct write_buf* wb = (struct write_buf*) p;
+	size_t len = sz * n;
 	if(wb->buf == NULL){
 		assert(wb->size == 0);
 		wb->buf = malloc(len+1);
