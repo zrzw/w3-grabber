@@ -19,6 +19,30 @@ void write_buf_init(struct write_buf*);
 void write_buf_cleanup(struct write_buf*);
 static size_t write_callback(void* buf, size_t sz, size_t nmemb, void* userp);
 
+struct ll_coord {
+	float lat;
+	float lng;
+	struct ll_coord* next;
+};
+
+struct ll_coord* ll_coord_create()
+{
+	struct ll_coord* p = malloc(sizeof(struct ll_coord));
+	p->next = NULL;
+	return p;
+}
+
+void ll_coord_cleanup(struct ll_coord* first)
+{
+	struct ll_coord* p = first;
+	struct ll_coord* q = first->next;
+	while(p != NULL){
+		free(p);
+		p = q;
+		q = p->next;
+	}
+}
+
 CURLcode query(char* request, void* curl_writedata)
 {
 	curl_global_init(CURL_GLOBAL_ALL);
@@ -32,6 +56,45 @@ CURLcode query(char* request, void* curl_writedata)
 	return success;
 }
 
+struct ll_coord* get_coords_from_grid_resp_str(char* str)
+{
+	json_object *resp;
+	resp = json_tokener_parse(str);
+	json_object *lines;
+	int rc = json_object_object_get_ex(resp, "lines", &lines);
+	if(rc == 0){
+		sprintf(stderr, "Error: invalid grid response received");
+		json_object_put(resp);
+		return NULL;
+	}
+	size_t ngrids = json_object_array_length(lines);
+	printf("%zu results returned\n", ngrids);
+	for(int i=0; i<ngrids; ++i){
+		json_object *it = json_object_array_get_idx(lines, i);
+		enum json_type type;
+		type = json_object_get_type(it);
+		if(type != json_type_object){
+			sprintf(stderr, "Error: unexpected non-object in list");
+		}
+		json_object *p, *q;
+		rc = json_object_object_get_ex(it, "start", &p);
+		double lat,lng;
+		if(rc){
+			rc = json_object_object_get_ex(p, "lat", &q);
+			if(rc){
+				lat = json_object_get_double(q);
+			}
+			rc = json_object_object_get_ex(p, "lng", &q);
+			if(rc){
+				lng = json_object_get_double(q);
+			}
+		}
+		printf("coords=%f,%f\n", lat, lng);
+	}
+	json_object_put(resp);
+	return NULL;
+}
+
 int main(int argc, char** argv)
 {
 	char* req = "https://api.what3words.com/v2/grid?bbox=52.208867,0.117540,52.207988,0.116126&format=json&key=7JHOQ1KX";
@@ -39,12 +102,10 @@ int main(int argc, char** argv)
 	write_buf_init(&wb);
 	CURLcode success = query(req, (void*) &wb);
 	if(success != 0){
+		sprintf(stderr, "Error: CURL query failed\n");
 		return -1;
 	}
-	json_object *resp;
-	resp = json_tokener_parse(wb.buf);
-	printf("resp json string=%s\n", json_object_to_json_string(resp));
-	json_object_put(resp);
+	struct ll_coord* head = get_coords_from_grid_resp_str(wb.buf);
 	write_buf_cleanup(&wb);
 	return 0;
 }
