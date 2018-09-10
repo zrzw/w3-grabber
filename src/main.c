@@ -1,5 +1,8 @@
 /*
- * main.c
+ * what3words grabber
+ * Turn an area bounded by a two coordinates (NE and SW corners) into
+ * a list of coordinates of grid squares as defined by the w3w API
+ * GPLv3. See LICENSE.txt
  *
  */
 #include <assert.h>
@@ -10,52 +13,53 @@
 #include <curl/easy.h>
 #include <json-c/json.h>
 
+/**
+ * Execute a GET request and put the result into a write_buf struct
+ *
+ * @param request
+ * @param write_buf a void* ptr to a write_buf struct
+ * @returns status (0=OK)
+ */
+CURLcode query(char *request, void *write_buf);
+
+/**
+ * Struct to hold the results of a CURL query
+ */
 struct write_buf {
 	size_t size;
 	char* buf;
 };
 
-void write_buf_init(struct write_buf*);
-void write_buf_cleanup(struct write_buf*);
-static size_t write_callback(void* buf, size_t sz, size_t nmemb, void* userp);
+void write_buf_init(struct write_buf *);
+void write_buf_reset(struct write_buf *);
+void write_buf_cleanup(struct write_buf *);
 
+/**
+ * Callback function passed to CURL to fill a write_buf struct.
+ */
+static size_t write_callback(void* buf, size_t sz, size_t nmemb, void *userp);
+
+/**
+ * Struct for a linked list of coordinates (lat/long) returned by
+ * the what3words 'grid' request
+ */
 struct ll_coord {
 	double lat;
 	double lng;
 	struct ll_coord* next;
 };
 
-struct ll_coord* ll_coord_create(struct ll_coord *tail)
-{
-	struct ll_coord* p = malloc(sizeof(struct ll_coord));
-	p->next = tail;
-	return p;
-}
+struct ll_coord* ll_coord_create(struct ll_coord *);
+void ll_coord_cleanup(struct ll_coord *);
 
-void ll_coord_cleanup(struct ll_coord* first)
-{
-	struct ll_coord* p = first;
-	while(p != NULL){
-		struct ll_coord* q = p->next;
-		free(p);
-		p = q;
-	}
-}
-
-CURLcode query(char* request, void* curl_writedata)
-{
-	curl_global_init(CURL_GLOBAL_ALL);
-	CURL* handle = curl_easy_init();
-	curl_easy_setopt(handle, CURLOPT_URL, request);
-	curl_easy_setopt(handle, CURLOPT_HTTPGET, 1L);
-	curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, write_callback);
-	curl_easy_setopt(handle, CURLOPT_WRITEDATA, curl_writedata);
-	CURLcode success = curl_easy_perform(handle);
-	curl_easy_cleanup(handle);
-	return success;
-}
-
-struct ll_coord* get_coords_from_grid_resp_str(char* str)
+/**
+ * Turn a response string from the 'grid' API request into a linked list
+ * by parsing the JSON response
+ *
+ * @param str the HTTP response
+ * @returns ptr to head of the linked list.
+ */
+struct ll_coord* grid_resp_str_to_coords(char* str)
 {
 	json_object *resp;
 	resp = json_tokener_parse(str);
@@ -91,7 +95,6 @@ struct ll_coord* get_coords_from_grid_resp_str(char* str)
 				head->lng = json_object_get_double(q);
 			}
 		}
-		printf("%f\n", head->lat);
 	}
 	json_object_put(resp);
 	return head;
@@ -99,9 +102,15 @@ struct ll_coord* get_coords_from_grid_resp_str(char* str)
 
 int main(int argc, char** argv)
 {
-	char* req = "https://api.what3words.com/v2/grid?"
-		"bbox=52.208867,0.117540,52.207988,0.116126"
-		"&format=json&key=7JHOQ1KX";
+	const size_t REQ_STR_SZ = 120;
+	char* req_fmt = "https://api.what3words.com/v2/"
+			"grid?bbox=%s&format=json&key=%s";
+	if(argc != 3){
+		printf("Usage: %s <bbox> <api key>\n", argv[0]);
+		return -1;
+	}
+	char req[REQ_STR_SZ];
+	snprintf(req, REQ_STR_SZ - 1, req_fmt, argv[1], argv[2]);
 	struct write_buf wb;
 	write_buf_init(&wb);
 	CURLcode success = query(req, (void*) &wb);
@@ -109,11 +118,11 @@ int main(int argc, char** argv)
 		printf("Error: CURL query failed\n");
 		return -1;
 	}
-	struct ll_coord* head = get_coords_from_grid_resp_str(wb.buf);
-	write_buf_cleanup(&wb);
-	write_buf_init(&wb);
+	struct ll_coord* head = grid_resp_str_to_coords(wb.buf);
+	write_buf_reset(&wb);
 	struct ll_coord* p = head;
 	while(p != NULL){
+		printf("Square: lat=%f, long=%f\n", p->lat, p->lng);
 		p = p->next;
 	}
 	ll_coord_cleanup(head);
@@ -133,6 +142,11 @@ void write_buf_cleanup(struct write_buf* wb)
 	wb->buf = NULL;
 }
 
+void write_buf_reset(struct write_buf* wb)
+{
+	write_buf_cleanup(wb);
+	write_buf_init(wb);
+}
 static size_t write_callback(void* buf,  size_t sz, size_t n, void* p)
 {
 	struct write_buf* wb = (struct write_buf*) p;
@@ -149,4 +163,34 @@ static size_t write_callback(void* buf,  size_t sz, size_t n, void* p)
 		wb->buf[wb->size] = 0;
 	}
 	return len;
+}
+
+struct ll_coord* ll_coord_create(struct ll_coord *tail)
+{
+	struct ll_coord* p = malloc(sizeof(struct ll_coord));
+	p->next = tail;
+	return p;
+}
+
+void ll_coord_cleanup(struct ll_coord* first)
+{
+	struct ll_coord* p = first;
+	while(p != NULL){
+		struct ll_coord* q = p->next;
+		free(p);
+		p = q;
+	}
+}
+
+CURLcode query(char* request, void* write_buf)
+{
+	curl_global_init(CURL_GLOBAL_ALL);
+	CURL* handle = curl_easy_init();
+	curl_easy_setopt(handle, CURLOPT_URL, request);
+	curl_easy_setopt(handle, CURLOPT_HTTPGET, 1L);
+	curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, write_callback);
+	curl_easy_setopt(handle, CURLOPT_WRITEDATA, write_buf);
+	CURLcode success = curl_easy_perform(handle);
+	curl_easy_cleanup(handle);
+	return success;
 }
