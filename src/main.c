@@ -122,6 +122,7 @@ int main(int argc, char** argv)
 	write_buf_reset(&wb);
 	struct ll_coord* p = head;
 	while(p != NULL){
+		// do something with the coordinates - in this case, print
 		printf("Square: lat=%f, long=%f\n", p->lat, p->lng);
 		p = p->next;
 	}
